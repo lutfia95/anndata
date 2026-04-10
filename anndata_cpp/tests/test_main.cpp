@@ -25,6 +25,12 @@ using anndata_cpp::Scalar;
 using anndata_cpp::SparseMatrix;
 using anndata_cpp::StringArray;
 
+/**
+ * @brief Owns an HDF5 identifier used while constructing test fixtures.
+ *
+ * The test suite writes synthetic `.h5ad` files directly through the HDF5 C
+ * API, so this RAII wrapper mirrors the production parser's handle management.
+ */
 class Handle {
 public:
     using CloseFn = anndata_cpp::h5::herr_t (*)(anndata_cpp::h5::hid_t);
@@ -67,6 +73,12 @@ private:
     CloseFn close_fn_ = nullptr;
 };
 
+/**
+ * @brief Asserts that a boolean condition holds during a test.
+ *
+ * @param condition The condition that must evaluate to `true`.
+ * @param message The failure message to raise when the condition is false.
+ */
 void expect(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
@@ -74,24 +86,53 @@ void expect(bool condition, const std::string& message) {
 }
 
 template <typename T>
+/**
+ * @brief Asserts that two values compare equal.
+ *
+ * @tparam T The comparable value type.
+ * @param actual The computed value under test.
+ * @param expected The expected reference value.
+ * @param message The failure message to raise on mismatch.
+ */
 void expect_equal(const T& actual, const T& expected, const std::string& message) {
     if (!(actual == expected)) {
         throw std::runtime_error(message);
     }
 }
 
+/**
+ * @brief Asserts that an HDF5 status code indicates success.
+ *
+ * @param status The status value returned by an HDF5 call.
+ * @param message The failure message to raise on error.
+ */
 void expect_ok(anndata_cpp::h5::herr_t status, const std::string& message) {
     if (status < 0) {
         throw std::runtime_error(message);
     }
 }
 
+/**
+ * @brief Asserts that an HDF5 identifier is valid.
+ *
+ * @param id The identifier returned by an HDF5 open or create call.
+ * @param message The failure message to raise on error.
+ */
 void expect_valid(anndata_cpp::h5::hid_t id, const std::string& message) {
     if (id < 0) {
         throw std::runtime_error(message);
     }
 }
 
+/**
+ * @brief Maps a local numeric dtype to the matching HDF5 native type.
+ *
+ * The fixture writers use this helper when creating numeric datasets of
+ * different dtypes directly through the HDF5 C API.
+ *
+ * @param dtype The local numeric dtype to map.
+ * @return The corresponding HDF5 native memory type identifier.
+ */
 anndata_cpp::h5::hid_t native_type_for(NumericArray::DType dtype) {
     using namespace anndata_cpp::h5;
     switch (dtype) {
@@ -121,6 +162,14 @@ anndata_cpp::h5::hid_t native_type_for(NumericArray::DType dtype) {
     throw std::runtime_error("unsupported dtype");
 }
 
+/**
+ * @brief Creates a fresh HDF5 file for a synthetic test fixture.
+ *
+ * Parent directories are created automatically before the file is truncated.
+ *
+ * @param path The filesystem path where the fixture file should be written.
+ * @return An owning handle for the created file.
+ */
 Handle make_file(const fs::path& path) {
     anndata_cpp::h5::initialize();
     fs::create_directories(path.parent_path());
@@ -134,6 +183,13 @@ Handle make_file(const fs::path& path) {
     return Handle(id, &anndata_cpp::h5::H5Fclose);
 }
 
+/**
+ * @brief Creates a group inside a synthetic fixture file.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The absolute path of the group to create.
+ * @return An owning handle for the created group.
+ */
 Handle make_group(anndata_cpp::h5::hid_t loc_id, const std::string& path) {
     const auto id = anndata_cpp::h5::H5Gcreate2(
         loc_id,
@@ -146,6 +202,15 @@ Handle make_group(anndata_cpp::h5::hid_t loc_id, const std::string& path) {
     return Handle(id, &anndata_cpp::h5::H5Gclose);
 }
 
+/**
+ * @brief Creates a dataspace for a synthetic dataset or attribute.
+ *
+ * Empty shapes are represented as scalar dataspaces so the fixture writers can
+ * create scalar datasets and attributes in the same way as arrays.
+ *
+ * @param shape The desired logical shape.
+ * @return An owning handle for the created dataspace.
+ */
 Handle make_dataspace(const std::vector<std::size_t>& shape) {
     if (shape.empty()) {
         const auto id = anndata_cpp::h5::H5Screate(anndata_cpp::h5::kScalarSpace);
@@ -166,6 +231,11 @@ Handle make_dataspace(const std::vector<std::size_t>& shape) {
     return Handle(id, &anndata_cpp::h5::H5Sclose);
 }
 
+/**
+ * @brief Creates a variable-length UTF-8 HDF5 string datatype.
+ *
+ * @return An owning handle for the configured string datatype.
+ */
 Handle make_vlen_utf8_string_type() {
     auto type = Handle(anndata_cpp::h5::H5Tcopy(anndata_cpp::h5::H5T_C_S1_g), &anndata_cpp::h5::H5Tclose);
     expect_valid(type.get(), "failed to copy string type");
@@ -175,6 +245,13 @@ Handle make_vlen_utf8_string_type() {
     return type;
 }
 
+/**
+ * @brief Writes a scalar string attribute onto an HDF5 object.
+ *
+ * @param obj_id The target object identifier.
+ * @param name The attribute name to create.
+ * @param value The string value to write.
+ */
 void write_string_attribute(anndata_cpp::h5::hid_t obj_id, const std::string& name, const std::string& value) {
     auto type = make_vlen_utf8_string_type();
     auto space = make_dataspace({});
@@ -187,6 +264,15 @@ void write_string_attribute(anndata_cpp::h5::hid_t obj_id, const std::string& na
     expect_ok(anndata_cpp::h5::H5Awrite(attr.get(), type.get(), &raw), "failed to write string attribute " + name);
 }
 
+/**
+ * @brief Writes a string-vector attribute onto an HDF5 object.
+ *
+ * This helper is used for metadata such as dataframe column order.
+ *
+ * @param obj_id The target object identifier.
+ * @param name The attribute name to create.
+ * @param values The string values to store.
+ */
 void write_string_vector_attribute(
     anndata_cpp::h5::hid_t obj_id,
     const std::string& name,
@@ -209,6 +295,13 @@ void write_string_vector_attribute(
     }
 }
 
+/**
+ * @brief Writes an integer vector attribute onto an HDF5 object.
+ *
+ * @param obj_id The target object identifier.
+ * @param name The attribute name to create.
+ * @param values The integer values to store.
+ */
 void write_int_vector_attribute(
     anndata_cpp::h5::hid_t obj_id,
     const std::string& name,
@@ -225,6 +318,13 @@ void write_int_vector_attribute(
     }
 }
 
+/**
+ * @brief Writes a boolean attribute onto an HDF5 object.
+ *
+ * @param obj_id The target object identifier.
+ * @param name The attribute name to create.
+ * @param value The boolean value to store.
+ */
 void write_bool_attribute(anndata_cpp::h5::hid_t obj_id, const std::string& name, bool value) {
     auto space = make_dataspace({});
     auto attr = Handle(
@@ -237,6 +337,19 @@ void write_bool_attribute(anndata_cpp::h5::hid_t obj_id, const std::string& name
 }
 
 template <typename T>
+/**
+ * @brief Writes a raw numeric dataset without AnnData array annotations.
+ *
+ * This helper is primarily used when constructing sparse payload arrays such as
+ * `data`, `indices`, and `indptr`.
+ *
+ * @tparam T The concrete numeric value type being written.
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param dtype The logical dtype to encode.
+ * @param shape The dataset shape.
+ * @param values The flat numeric payload to write.
+ */
 void write_numeric_dataset(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -258,12 +371,27 @@ void write_numeric_dataset(
     }
 }
 
+/**
+ * @brief Attaches modern dense-array encoding metadata to a dataset.
+ *
+ * @param object_id The dataset identifier to annotate.
+ */
 void annotate_array(anndata_cpp::h5::hid_t object_id) {
     write_string_attribute(object_id, "encoding-type", "array");
     write_string_attribute(object_id, "encoding-version", "0.2.0");
 }
 
 template <typename T>
+/**
+ * @brief Writes an AnnData tagged dense numeric array dataset.
+ *
+ * @tparam T The concrete numeric value type being written.
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param dtype The logical numeric dtype to encode.
+ * @param shape The dataset shape.
+ * @param values The flat numeric payload to write.
+ */
 void write_array_dataset(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -286,6 +414,14 @@ void write_array_dataset(
     }
 }
 
+/**
+ * @brief Writes an AnnData tagged dense string array dataset.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param shape The dataset shape.
+ * @param values The flat string payload to write.
+ */
 void write_string_array_dataset(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -315,6 +451,15 @@ void write_string_array_dataset(
 }
 
 template <typename T>
+/**
+ * @brief Writes a tagged numeric scalar dataset.
+ *
+ * @tparam T The concrete scalar value type being written.
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param dtype The logical numeric dtype to encode.
+ * @param value The scalar value to write.
+ */
 void write_numeric_scalar_dataset(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -335,6 +480,13 @@ void write_numeric_scalar_dataset(
     );
 }
 
+/**
+ * @brief Writes a tagged string scalar dataset.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param value The string scalar value to write.
+ */
 void write_string_scalar_dataset(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -356,6 +508,17 @@ void write_string_scalar_dataset(
     );
 }
 
+/**
+ * @brief Creates and annotates a dataframe group.
+ *
+ * The caller is responsible for writing the index dataset and any column
+ * datasets beneath the group after the metadata is established.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataframe group path to create.
+ * @param index_name The stored dataframe index key.
+ * @param column_order The ordered dataframe column names.
+ */
 void write_dataframe_group(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -369,12 +532,29 @@ void write_dataframe_group(
     write_string_attribute(group.get(), "encoding-version", "0.2.0");
 }
 
+/**
+ * @brief Creates and annotates a dictionary-style mapping group.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The mapping group path to create.
+ */
 void write_dict_group(anndata_cpp::h5::hid_t loc_id, const std::string& path) {
     auto group = make_group(loc_id, path);
     write_string_attribute(group.get(), "encoding-type", "dict");
     write_string_attribute(group.get(), "encoding-version", "0.1.0");
 }
 
+/**
+ * @brief Creates and annotates a sparse matrix group.
+ *
+ * The caller is responsible for writing the `data`, `indices`, and `indptr`
+ * children after the sparse group metadata is created.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The sparse group path to create.
+ * @param format The sparse layout to encode.
+ * @param shape The two-dimensional matrix shape.
+ */
 void write_sparse_group(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -394,6 +574,15 @@ void write_sparse_group(
     );
 }
 
+/**
+ * @brief Creates and annotates a categorical column group.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The categorical group path to create.
+ * @param codes The categorical integer codes.
+ * @param categories The category labels.
+ * @param ordered Whether the categorical values are ordered.
+ */
 void write_categorical_group(
     anndata_cpp::h5::hid_t loc_id,
     const std::string& path,
@@ -409,6 +598,15 @@ void write_categorical_group(
     write_string_array_dataset(group.get(), "categories", {categories.size()}, categories);
 }
 
+/**
+ * @brief Builds a synthetic dense modern `.h5ad` fixture.
+ *
+ * The fixture exercises dense `X`, numeric and categorical `obs` columns,
+ * string `var` indexes, dense `obsm`, dense `layers`, and scalar `uns` values.
+ *
+ * @param root The directory where the fixture file should be written.
+ * @return The path to the generated dense fixture.
+ */
 fs::path make_modern_dense_fixture(const fs::path& root) {
     const fs::path path = root / "modern_dense.h5ad";
     auto file = make_file(path);
@@ -439,6 +637,15 @@ fs::path make_modern_dense_fixture(const fs::path& root) {
     return path;
 }
 
+/**
+ * @brief Builds a synthetic sparse modern `.h5ad` fixture.
+ *
+ * The fixture exercises sparse `X`, sparse layers, and empty-but-present
+ * mapping slots used by the parser.
+ *
+ * @param root The directory where the fixture file should be written.
+ * @return The path to the generated sparse fixture.
+ */
 fs::path make_modern_sparse_fixture(const fs::path& root) {
     const fs::path path = root / "modern_sparse.h5ad";
     auto file = make_file(path);
@@ -472,18 +679,42 @@ fs::path make_modern_sparse_fixture(const fs::path& root) {
     return path;
 }
 
+/**
+ * @brief Extracts a numeric dataframe column from a `Column` variant.
+ *
+ * @param column The column variant to unwrap.
+ * @return A const reference to the stored numeric array.
+ */
 const NumericArray& as_numeric(const Column& column) {
     return std::get<NumericArray>(column);
 }
 
+/**
+ * @brief Extracts a string dataframe column from a `Column` variant.
+ *
+ * @param column The column variant to unwrap.
+ * @return A const reference to the stored string array.
+ */
 const StringArray& as_string_array(const Column& column) {
     return std::get<StringArray>(column);
 }
 
+/**
+ * @brief Extracts a categorical dataframe column from a `Column` variant.
+ *
+ * @param column The column variant to unwrap.
+ * @return A const reference to the stored categorical column.
+ */
 const Categorical& as_categorical(const Column& column) {
     return std::get<Categorical>(column);
 }
 
+/**
+ * @brief Verifies parsing of a synthetic dense modern `.h5ad` file.
+ *
+ * This test covers dense `X`, dataframe columns, categoricals, dense mappings,
+ * and scalar `uns` payloads.
+ */
 void test_synthetic_modern_dense_h5ad() {
     const fs::path temp_dir = fs::temp_directory_path() / "anndata_cpp_h5ad_dense";
     fs::remove_all(temp_dir);
@@ -516,6 +747,12 @@ void test_synthetic_modern_dense_h5ad() {
     expect_equal(adata.uns->items.at("metric").as_scalar().as_string(), std::string("euclidean"), "unexpected uns/metric");
 }
 
+/**
+ * @brief Verifies parsing of a synthetic sparse modern `.h5ad` file.
+ *
+ * This test covers CSR `X`, sparse layers, and the presence of the standard
+ * mapping slots used in modern AnnData layouts.
+ */
 void test_synthetic_modern_sparse_h5ad() {
     const fs::path temp_dir = fs::temp_directory_path() / "anndata_cpp_h5ad_sparse";
     fs::remove_all(temp_dir);
@@ -540,6 +777,12 @@ void test_synthetic_modern_sparse_h5ad() {
     expect_equal(counts.indptr.values<std::int64_t>(), std::vector<std::int64_t>({0, 0, 1}), "unexpected sparse layer indptr");
 }
 
+/**
+ * @brief Verifies parsing of the bundled real-world modern archive fixture.
+ *
+ * The current `v0.11.4` archive is intentionally simple but still acts as a
+ * regression check against a file produced by the Python project itself.
+ */
 void test_real_archive_v0114_h5ad() {
     const fs::path archive =
         fs::path(ANNDATA_CPP_REPO_ROOT) / "tests" / "data" / "archives" / "v0.11.4" / "adata.h5ad";
@@ -553,6 +796,12 @@ void test_real_archive_v0114_h5ad() {
     expect_equal(as_string_array(adata.var.index).values.back(), std::string("19"), "unexpected last var index");
 }
 
+/**
+ * @brief Verifies that older unsupported archive layouts fail cleanly.
+ *
+ * The project currently targets the modern tagged format only, so older files
+ * should raise a clear error instead of being misinterpreted silently.
+ */
 void test_old_archive_fails_cleanly() {
     const fs::path archive =
         fs::path(ANNDATA_CPP_REPO_ROOT) / "tests" / "data" / "archives" / "v0.7.8" / "adata.h5ad";
@@ -574,6 +823,14 @@ void test_old_archive_fails_cleanly() {
 
 }  // namespace
 
+/**
+ * @brief Runs the standalone C++ test suite without an external framework.
+ *
+ * Each test is executed sequentially, printing a pass/fail line and returning
+ * a non-zero exit code on the first failure.
+ *
+ * @return `0` when every test passes, otherwise `1`.
+ */
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"synthetic_modern_dense_h5ad", test_synthetic_modern_dense_h5ad},

@@ -24,6 +24,13 @@ namespace {
 
 using h5::hid_t;
 
+/**
+ * @brief Owns an HDF5 identifier together with the function needed to close it.
+ *
+ * This small RAII wrapper keeps file, group, dataset, datatype, dataspace, and
+ * attribute handles exception-safe by automatically releasing them when they go
+ * out of scope.
+ */
 class Handle {
 public:
     using CloseFn = h5::herr_t (*)(hid_t);
@@ -76,6 +83,16 @@ private:
     CloseFn close_fn_ = nullptr;
 };
 
+/**
+ * @brief Concatenates an HDF5 parent path and child name into one absolute path.
+ *
+ * The helper keeps root handling consistent so recursive readers can build
+ * paths like `/obs/cell_type` without duplicating slash logic everywhere.
+ *
+ * @param base The existing absolute parent path.
+ * @param leaf The child path component to append.
+ * @return The combined absolute HDF5 path.
+ */
 std::string join_path(std::string_view base, std::string_view leaf) {
     if (base.empty() || base == "/") {
         return "/" + std::string(leaf);
@@ -83,18 +100,41 @@ std::string join_path(std::string_view base, std::string_view leaf) {
     return std::string(base) + "/" + std::string(leaf);
 }
 
+/**
+ * @brief Throws an `Error` when an HDF5 call reports failure.
+ *
+ * @param status The status code returned by an HDF5 function.
+ * @param message The parser error message to raise on failure.
+ * @throws Error If `status` is negative.
+ */
 void expect_ok(h5::herr_t status, const std::string& message) {
     if (status < 0) {
         throw Error(message);
     }
 }
 
+/**
+ * @brief Throws an `Error` when an HDF5 identifier is invalid.
+ *
+ * @param id The HDF5 identifier returned by an open or create call.
+ * @param message The parser error message to raise on failure.
+ * @throws Error If `id` is negative.
+ */
 void expect_valid(hid_t id, const std::string& message) {
     if (id < 0) {
         throw Error(message);
     }
 }
 
+/**
+ * @brief Opens an `.h5ad` file in read-only mode.
+ *
+ * The function also ensures the HDF5 runtime is initialized before attempting
+ * to open the file.
+ *
+ * @param path The filesystem path to the target `.h5ad` file.
+ * @return An owning handle for the opened HDF5 file.
+ */
 Handle open_file_readonly(const std::filesystem::path& path) {
     h5::initialize();
     const hid_t file_id = h5::H5Fopen(path.c_str(), h5::kFileAccRdOnly, h5::kDefault);
@@ -102,24 +142,54 @@ Handle open_file_readonly(const std::filesystem::path& path) {
     return Handle(file_id, &h5::H5Fclose);
 }
 
+/**
+ * @brief Opens an arbitrary HDF5 object by absolute path.
+ *
+ * @param loc_id The parent location from which the path is resolved.
+ * @param path The absolute HDF5 object path to open.
+ * @return An owning handle for the opened object.
+ */
 Handle open_object(hid_t loc_id, const std::string& path) {
     const hid_t object_id = h5::H5Oopen(loc_id, path.c_str(), h5::kDefault);
     expect_valid(object_id, "failed to open HDF5 object at " + path);
     return Handle(object_id, &h5::H5Oclose);
 }
 
+/**
+ * @brief Opens an HDF5 group by path.
+ *
+ * @param loc_id The parent location from which the group is resolved.
+ * @param path The absolute group path to open.
+ * @return An owning handle for the opened group.
+ */
 Handle open_group(hid_t loc_id, const std::string& path) {
     const hid_t group_id = h5::H5Gopen2(loc_id, path.c_str(), h5::kDefault);
     expect_valid(group_id, "failed to open HDF5 group at " + path);
     return Handle(group_id, &h5::H5Gclose);
 }
 
+/**
+ * @brief Opens an HDF5 dataset by path.
+ *
+ * @param loc_id The parent location from which the dataset is resolved.
+ * @param path The absolute dataset path to open.
+ * @return An owning handle for the opened dataset.
+ */
 Handle open_dataset(hid_t loc_id, const std::string& path) {
     const hid_t dataset_id = h5::H5Dopen2(loc_id, path.c_str(), h5::kDefault);
     expect_valid(dataset_id, "failed to open HDF5 dataset at " + path);
     return Handle(dataset_id, &h5::H5Dclose);
 }
 
+/**
+ * @brief Opens a required attribute on an HDF5 object.
+ *
+ * @param obj_id The object that owns the attribute.
+ * @param name The attribute name to open.
+ * @param context A human-readable description of the object for error messages.
+ * @return An owning handle for the opened attribute.
+ * @throws Error If the attribute does not exist or cannot be opened.
+ */
 Handle open_attribute(hid_t obj_id, const std::string& name, const std::string& context) {
     if (h5::H5Aexists(obj_id, name.c_str()) <= 0) {
         throw Error(context + " is missing required attribute '" + name + "'");
@@ -129,30 +199,67 @@ Handle open_attribute(hid_t obj_id, const std::string& name, const std::string& 
     return Handle(attr_id, &h5::H5Aclose);
 }
 
+/**
+ * @brief Retrieves the datatype associated with a dataset.
+ *
+ * @param dataset_id The dataset identifier.
+ * @param context A human-readable description used in error messages.
+ * @return An owning handle for the dataset datatype.
+ */
 Handle get_dataset_type(hid_t dataset_id, const std::string& context) {
     const hid_t type_id = h5::H5Dget_type(dataset_id);
     expect_valid(type_id, "failed to read datatype for " + context);
     return Handle(type_id, &h5::H5Tclose);
 }
 
+/**
+ * @brief Retrieves the dataspace associated with a dataset.
+ *
+ * @param dataset_id The dataset identifier.
+ * @param context A human-readable description used in error messages.
+ * @return An owning handle for the dataset dataspace.
+ */
 Handle get_dataset_space(hid_t dataset_id, const std::string& context) {
     const hid_t space_id = h5::H5Dget_space(dataset_id);
     expect_valid(space_id, "failed to read dataspace for " + context);
     return Handle(space_id, &h5::H5Sclose);
 }
 
+/**
+ * @brief Retrieves the datatype associated with an attribute.
+ *
+ * @param attr_id The attribute identifier.
+ * @param context A human-readable description used in error messages.
+ * @return An owning handle for the attribute datatype.
+ */
 Handle get_attribute_type(hid_t attr_id, const std::string& context) {
     const hid_t type_id = h5::H5Aget_type(attr_id);
     expect_valid(type_id, "failed to read attribute datatype for " + context);
     return Handle(type_id, &h5::H5Tclose);
 }
 
+/**
+ * @brief Retrieves the dataspace associated with an attribute.
+ *
+ * @param attr_id The attribute identifier.
+ * @param context A human-readable description used in error messages.
+ * @return An owning handle for the attribute dataspace.
+ */
 Handle get_attribute_space(hid_t attr_id, const std::string& context) {
     const hid_t space_id = h5::H5Aget_space(attr_id);
     expect_valid(space_id, "failed to read attribute dataspace for " + context);
     return Handle(space_id, &h5::H5Sclose);
 }
 
+/**
+ * @brief Converts an HDF5 dataspace into a vector of extents.
+ *
+ * Scalar dataspaces are represented as an empty shape vector, while array
+ * dataspaces are converted into `std::size_t` dimensions.
+ *
+ * @param space_id The dataspace identifier to inspect.
+ * @return The decoded logical shape.
+ */
 std::vector<std::size_t> get_shape(hid_t space_id) {
     const int ndims = h5::H5Sget_simple_extent_ndims(space_id);
     if (ndims < 0) {
@@ -174,6 +281,15 @@ std::vector<std::size_t> get_shape(hid_t space_id) {
     return out;
 }
 
+/**
+ * @brief Computes the product of a shape vector.
+ *
+ * The empty-shape case is treated as one element, which matches the scalar
+ * semantics used throughout the parser.
+ *
+ * @param shape The shape dimensions to multiply.
+ * @return The total number of elements implied by `shape`.
+ */
 std::size_t product(const std::vector<std::size_t>& shape) {
     if (shape.empty()) {
         return 1;
@@ -186,6 +302,13 @@ std::size_t product(const std::vector<std::size_t>& shape) {
     );
 }
 
+/**
+ * @brief Trims a fixed-width C string at the first null terminator.
+ *
+ * @param bytes The start of the fixed-width character buffer.
+ * @param width The number of bytes available in the buffer.
+ * @return The decoded C++ string without trailing padding bytes.
+ */
 std::string trim_c_string(const char* bytes, std::size_t width) {
     std::size_t length = 0;
     while (length < width && bytes[length] != '\0') {
@@ -194,10 +317,26 @@ std::string trim_c_string(const char* bytes, std::size_t width) {
     return std::string(bytes, length);
 }
 
+/**
+ * @brief Checks whether an HDF5 link exists at the given path.
+ *
+ * @param loc_id The parent location from which the path is resolved.
+ * @param path The absolute HDF5 path to test.
+ * @return `true` when the link exists.
+ */
 bool link_exists(hid_t loc_id, const std::string& path) {
     return h5::H5Lexists(loc_id, path.c_str(), h5::kDefault) > 0;
 }
 
+/**
+ * @brief Returns the sorted child names of an HDF5 group.
+ *
+ * The names are sorted to keep mapping iteration deterministic across runs.
+ *
+ * @param loc_id The parent location from which the group is resolved.
+ * @param path The absolute group path to enumerate.
+ * @return A sorted vector of child names.
+ */
 std::vector<std::string> group_children(hid_t loc_id, const std::string& path) {
     const Handle group = open_group(loc_id, path);
     h5::hsize_t num_objects = 0;
@@ -226,6 +365,16 @@ std::vector<std::string> group_children(hid_t loc_id, const std::string& path) {
     return names;
 }
 
+/**
+ * @brief Reads a scalar string attribute from an HDF5 object.
+ *
+ * Both fixed-width and variable-length UTF-8 string attributes are supported.
+ *
+ * @param obj_id The object that owns the attribute.
+ * @param name The attribute name to read.
+ * @param context A human-readable description used in error messages.
+ * @return The decoded string value.
+ */
 std::string read_string_attribute(hid_t obj_id, const std::string& name, const std::string& context) {
     const Handle attr = open_attribute(obj_id, name, context);
     const Handle type = get_attribute_type(attr.get(), context);
@@ -259,6 +408,17 @@ std::string read_string_attribute(hid_t obj_id, const std::string& name, const s
     return trim_c_string(bytes.data(), width);
 }
 
+/**
+ * @brief Reads a string-vector attribute from an HDF5 object.
+ *
+ * This helper is used for metadata such as dataframe column order where the
+ * attribute stores a collection of strings rather than a scalar.
+ *
+ * @param obj_id The object that owns the attribute.
+ * @param name The attribute name to read.
+ * @param context A human-readable description used in error messages.
+ * @return The decoded string vector.
+ */
 std::vector<std::string> read_string_vector_attribute(
     hid_t obj_id,
     const std::string& name,
@@ -305,6 +465,17 @@ std::vector<std::string> read_string_vector_attribute(
     return out;
 }
 
+/**
+ * @brief Reads an integer-like attribute into signed 64-bit values.
+ *
+ * Integer and enum HDF5 attributes are both normalized into `std::int64_t`
+ * values so callers can use the same helper for shapes and boolean flags.
+ *
+ * @param obj_id The object that owns the attribute.
+ * @param name The attribute name to read.
+ * @param context A human-readable description used in error messages.
+ * @return The decoded integer values.
+ */
 std::vector<std::int64_t> read_int_vector_attribute(
     hid_t obj_id,
     const std::string& name,
@@ -326,6 +497,14 @@ std::vector<std::int64_t> read_int_vector_attribute(
     return out;
 }
 
+/**
+ * @brief Reads a boolean attribute encoded as an integer-like scalar.
+ *
+ * @param obj_id The object that owns the attribute.
+ * @param name The attribute name to read.
+ * @param context A human-readable description used in error messages.
+ * @return The decoded boolean flag.
+ */
 bool read_bool_attribute(hid_t obj_id, const std::string& name, const std::string& context) {
     const auto values = read_int_vector_attribute(obj_id, name, context);
     if (values.size() != 1) {
@@ -334,6 +513,13 @@ bool read_bool_attribute(hid_t obj_id, const std::string& name, const std::strin
     return values[0] != 0;
 }
 
+/**
+ * @brief Maps an HDF5 numeric datatype to the local `NumericArray::DType`.
+ *
+ * @param type_id The HDF5 datatype identifier to inspect.
+ * @param context A human-readable description used in error messages.
+ * @return The matching local numeric dtype.
+ */
 NumericArray::DType map_numeric_dtype(hid_t type_id, const std::string& context) {
     const h5::TClass type_class = h5::H5Tget_class(type_id);
     const std::size_t size = h5::H5Tget_size(type_id);
@@ -385,6 +571,12 @@ NumericArray::DType map_numeric_dtype(hid_t type_id, const std::string& context)
     throw Error("unsupported HDF5 numeric datatype at " + context);
 }
 
+/**
+ * @brief Returns the native HDF5 memory type corresponding to a local dtype.
+ *
+ * @param dtype The local numeric dtype.
+ * @return The matching HDF5 native memory datatype identifier.
+ */
 hid_t native_type_for(NumericArray::DType dtype) {
     switch (dtype) {
         case NumericArray::DType::kBool:
@@ -413,6 +605,12 @@ hid_t native_type_for(NumericArray::DType dtype) {
     throw Error("unsupported numeric dtype");
 }
 
+/**
+ * @brief Returns the byte width associated with a local numeric dtype.
+ *
+ * @param dtype The local numeric dtype.
+ * @return The size in bytes of one value of that dtype.
+ */
 std::size_t item_size(NumericArray::DType dtype) {
     switch (dtype) {
         case NumericArray::DType::kBool:
@@ -434,6 +632,16 @@ std::size_t item_size(NumericArray::DType dtype) {
     throw Error("unsupported numeric dtype");
 }
 
+/**
+ * @brief Reads a dense numeric dataset into a `NumericArray`.
+ *
+ * The dataset shape, dtype, and raw byte payload are all preserved so callers
+ * can materialize typed values later using the exact stored dtype.
+ *
+ * @param loc_id The parent location from which the dataset path is resolved.
+ * @param path The absolute dataset path to read.
+ * @return The decoded dense numeric array.
+ */
 NumericArray read_numeric_dataset(hid_t loc_id, const std::string& path) {
     const Handle dataset = open_dataset(loc_id, path);
     const Handle type = get_dataset_type(dataset.get(), path);
@@ -459,6 +667,15 @@ NumericArray read_numeric_dataset(hid_t loc_id, const std::string& path) {
     return out;
 }
 
+/**
+ * @brief Reads a dense string dataset into a `StringArray`.
+ *
+ * Both fixed-width and variable-length string datasets are supported.
+ *
+ * @param loc_id The parent location from which the dataset path is resolved.
+ * @param path The absolute dataset path to read.
+ * @return The decoded dense string array.
+ */
 StringArray read_string_dataset(hid_t loc_id, const std::string& path) {
     const Handle dataset = open_dataset(loc_id, path);
     const Handle type = get_dataset_type(dataset.get(), path);
@@ -511,6 +728,16 @@ StringArray read_string_dataset(hid_t loc_id, const std::string& path) {
 Column read_column(hid_t loc_id, const std::string& path);
 Element read_element(hid_t loc_id, const std::string& path);
 
+/**
+ * @brief Reads a tagged AnnData dataframe group such as `obs` or `var`.
+ *
+ * The reader validates the dataframe encoding metadata, resolves the stored
+ * index column, and decodes each named dataframe column in column-order order.
+ *
+ * @param loc_id The parent location from which the dataframe path is resolved.
+ * @param path The absolute dataframe group path to decode.
+ * @return The decoded dataframe representation.
+ */
 DataFrame read_dataframe(hid_t loc_id, const std::string& path) {
     const Handle group = open_group(loc_id, path);
     const std::string version = read_string_attribute(group.get(), "encoding-version", path);
@@ -531,6 +758,16 @@ DataFrame read_dataframe(hid_t loc_id, const std::string& path) {
     return out;
 }
 
+/**
+ * @brief Reads a categorical column group.
+ *
+ * The categorical payload is reconstructed from its codes array, categories
+ * string array, and ordered flag.
+ *
+ * @param loc_id The parent location from which the group path is resolved.
+ * @param path The absolute categorical group path to decode.
+ * @return The decoded categorical column.
+ */
 Categorical read_categorical(hid_t loc_id, const std::string& path) {
     const Handle group = open_group(loc_id, path);
     if (read_string_attribute(group.get(), "encoding-type", path) != "categorical") {
@@ -548,6 +785,18 @@ Categorical read_categorical(hid_t loc_id, const std::string& path) {
     return out;
 }
 
+/**
+ * @brief Reads a sparse matrix group in CSR or CSC form.
+ *
+ * The helper validates the encoding metadata, reads the declared matrix shape,
+ * and decodes the `data`, `indices`, and `indptr` arrays needed to reconstruct
+ * the sparse structure.
+ *
+ * @param loc_id The parent location from which the group path is resolved.
+ * @param path The absolute sparse group path to decode.
+ * @param format The expected sparse storage layout.
+ * @return The decoded sparse matrix.
+ */
 SparseMatrix read_sparse(hid_t loc_id, const std::string& path, SparseMatrix::Format format) {
     const Handle group = open_group(loc_id, path);
     const std::string expected_type = format == SparseMatrix::Format::kCsr ? "csr_matrix" : "csc_matrix";
@@ -576,6 +825,16 @@ SparseMatrix read_sparse(hid_t loc_id, const std::string& path, SparseMatrix::Fo
     return out;
 }
 
+/**
+ * @brief Reads a tagged scalar dataset.
+ *
+ * Numeric and string scalar encodings are supported and normalized into the
+ * local `Scalar` variant.
+ *
+ * @param loc_id The parent location from which the dataset path is resolved.
+ * @param path The absolute scalar dataset path to decode.
+ * @return The decoded scalar value.
+ */
 Scalar read_scalar(hid_t loc_id, const std::string& path) {
     const Handle dataset = open_dataset(loc_id, path);
     const Handle type = get_dataset_type(dataset.get(), path);
@@ -628,6 +887,17 @@ Scalar read_scalar(hid_t loc_id, const std::string& path) {
     }
 }
 
+/**
+ * @brief Reads a dictionary-like mapping group.
+ *
+ * Child names are enumerated deterministically and each element is decoded
+ * recursively using the generic element reader.
+ *
+ * @param loc_id The parent location from which the group path is resolved.
+ * @param path The absolute mapping group path to decode.
+ * @param expected_type The required tagged mapping type, such as `dict` or `raw`.
+ * @return The decoded recursive mapping.
+ */
 std::shared_ptr<Mapping> read_mapping(hid_t loc_id, const std::string& path, std::string_view expected_type) {
     const Handle group = open_group(loc_id, path);
     const std::string encoding_type = read_string_attribute(group.get(), "encoding-type", path);
@@ -646,6 +916,16 @@ std::shared_ptr<Mapping> read_mapping(hid_t loc_id, const std::string& path, std
     return mapping;
 }
 
+/**
+ * @brief Reads one dataframe column from a dataset or tagged group.
+ *
+ * Columns may be stored directly as dense datasets or as grouped categorical
+ * elements, so this helper dispatches based on object kind and encoding tags.
+ *
+ * @param loc_id The parent location from which the column path is resolved.
+ * @param path The absolute column path to decode.
+ * @return The decoded dataframe column variant.
+ */
 Column read_column(hid_t loc_id, const std::string& path) {
     const Handle object = open_object(loc_id, path);
     if (h5::H5Iget_type(object.get()) == h5::IType::kDataset) {
@@ -677,6 +957,17 @@ Column read_column(hid_t loc_id, const std::string& path) {
     throw Error("unsupported dataframe column encoding-type at " + path + ": " + encoding_type);
 }
 
+/**
+ * @brief Reads any supported AnnData element from a dataset or group path.
+ *
+ * This is the central dispatch function for recursive mappings and the top-
+ * level `X` slot. It examines the HDF5 object kind and the tagged encoding
+ * metadata to choose the correct specialized reader.
+ *
+ * @param loc_id The parent location from which the element path is resolved.
+ * @param path The absolute element path to decode.
+ * @return The decoded generic element wrapper.
+ */
 Element read_element(hid_t loc_id, const std::string& path) {
     const Handle object = open_object(loc_id, path);
     const h5::IType object_type = h5::H5Iget_type(object.get());
@@ -737,102 +1028,232 @@ Element read_element(hid_t loc_id, const std::string& path) {
 
 }  // namespace
 
+/**
+ * @brief Returns the number of elements represented by this numeric array.
+ *
+ * @return The product of the array dimensions.
+ */
 std::size_t NumericArray::element_count() const {
     return product(shape);
 }
 
+/**
+ * @brief Returns the byte width of one stored numeric value.
+ *
+ * @return The number of bytes used by the array dtype.
+ */
 std::size_t NumericArray::item_size() const {
     return anndata_cpp::item_size(dtype);
 }
 
+/**
+ * @brief Checks whether the scalar stores a boolean value.
+ *
+ * @return `true` when the active scalar variant alternative is `bool`.
+ */
 bool Scalar::is_bool() const {
     return std::holds_alternative<bool>(value);
 }
 
+/**
+ * @brief Checks whether the scalar stores an integer value.
+ *
+ * @return `true` when the active scalar variant alternative is `std::int64_t`.
+ */
 bool Scalar::is_int() const {
     return std::holds_alternative<std::int64_t>(value);
 }
 
+/**
+ * @brief Checks whether the scalar stores a floating-point value.
+ *
+ * @return `true` when the active scalar variant alternative is `double`.
+ */
 bool Scalar::is_double() const {
     return std::holds_alternative<double>(value);
 }
 
+/**
+ * @brief Checks whether the scalar stores a string value.
+ *
+ * @return `true` when the active scalar variant alternative is `std::string`.
+ */
 bool Scalar::is_string() const {
     return std::holds_alternative<std::string>(value);
 }
 
+/**
+ * @brief Returns the stored boolean scalar.
+ *
+ * @return The contained boolean value.
+ */
 bool Scalar::as_bool() const {
     return std::get<bool>(value);
 }
 
+/**
+ * @brief Returns the stored integer scalar.
+ *
+ * @return The contained signed integer value.
+ */
 std::int64_t Scalar::as_int() const {
     return std::get<std::int64_t>(value);
 }
 
+/**
+ * @brief Returns the stored floating-point scalar.
+ *
+ * @return The contained double value.
+ */
 double Scalar::as_double() const {
     return std::get<double>(value);
 }
 
+/**
+ * @brief Returns the stored string scalar.
+ *
+ * @return A const reference to the contained string.
+ */
 const std::string& Scalar::as_string() const {
     return std::get<std::string>(value);
 }
 
+/**
+ * @brief Checks whether this element stores a dense numeric array.
+ *
+ * @return `true` when the active element variant alternative is `NumericArray`.
+ */
 bool Element::is_numeric_array() const {
     return std::holds_alternative<NumericArray>(value);
 }
 
+/**
+ * @brief Checks whether this element stores a dense string array.
+ *
+ * @return `true` when the active element variant alternative is `StringArray`.
+ */
 bool Element::is_string_array() const {
     return std::holds_alternative<StringArray>(value);
 }
 
+/**
+ * @brief Checks whether this element stores a categorical array.
+ *
+ * @return `true` when the active element variant alternative is `Categorical`.
+ */
 bool Element::is_categorical() const {
     return std::holds_alternative<Categorical>(value);
 }
 
+/**
+ * @brief Checks whether this element stores a sparse matrix.
+ *
+ * @return `true` when the active element variant alternative is `SparseMatrix`.
+ */
 bool Element::is_sparse() const {
     return std::holds_alternative<SparseMatrix>(value);
 }
 
+/**
+ * @brief Checks whether this element stores a dataframe.
+ *
+ * @return `true` when the active element variant alternative is `DataFrame`.
+ */
 bool Element::is_dataframe() const {
     return std::holds_alternative<DataFrame>(value);
 }
 
+/**
+ * @brief Checks whether this element stores a mapping.
+ *
+ * @return `true` when the active element variant alternative is a mapping pointer.
+ */
 bool Element::is_mapping() const {
     return std::holds_alternative<std::shared_ptr<Mapping>>(value);
 }
 
+/**
+ * @brief Checks whether this element stores a scalar value.
+ *
+ * @return `true` when the active element variant alternative is `Scalar`.
+ */
 bool Element::is_scalar() const {
     return std::holds_alternative<Scalar>(value);
 }
 
+/**
+ * @brief Returns this element as a dense numeric array.
+ *
+ * @return A const reference to the stored numeric array.
+ */
 const NumericArray& Element::as_numeric_array() const {
     return std::get<NumericArray>(value);
 }
 
+/**
+ * @brief Returns this element as a dense string array.
+ *
+ * @return A const reference to the stored string array.
+ */
 const StringArray& Element::as_string_array() const {
     return std::get<StringArray>(value);
 }
 
+/**
+ * @brief Returns this element as a categorical array.
+ *
+ * @return A const reference to the stored categorical array.
+ */
 const Categorical& Element::as_categorical() const {
     return std::get<Categorical>(value);
 }
 
+/**
+ * @brief Returns this element as a sparse matrix.
+ *
+ * @return A const reference to the stored sparse matrix.
+ */
 const SparseMatrix& Element::as_sparse() const {
     return std::get<SparseMatrix>(value);
 }
 
+/**
+ * @brief Returns this element as a dataframe.
+ *
+ * @return A const reference to the stored dataframe.
+ */
 const DataFrame& Element::as_dataframe() const {
     return std::get<DataFrame>(value);
 }
 
+/**
+ * @brief Returns this element as a mapping.
+ *
+ * @return A const reference to the stored mapping.
+ */
 const Mapping& Element::as_mapping() const {
     return *std::get<std::shared_ptr<Mapping>>(value);
 }
 
+/**
+ * @brief Returns this element as a scalar.
+ *
+ * @return A const reference to the stored scalar.
+ */
 const Scalar& Element::as_scalar() const {
     return std::get<Scalar>(value);
 }
 
+/**
+ * @brief Reads the top-level AnnData object from a modern `.h5ad` file.
+ *
+ * The root group is validated first, then each well-known AnnData slot is read
+ * if present. Optional mappings are only decoded when the corresponding links
+ * exist in the file.
+ *
+ * @param path The filesystem path to the `.h5ad` file to parse.
+ * @return The decoded top-level AnnData object.
+ */
 AnnData read_h5ad(const std::filesystem::path& path) {
     const Handle file = open_file_readonly(path);
 

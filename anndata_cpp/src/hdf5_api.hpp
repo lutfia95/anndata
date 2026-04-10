@@ -5,7 +5,21 @@
 
 namespace anndata_cpp::h5 {
 
+/**
+ * @brief Stores the opaque identifier type used by the HDF5 C API.
+ *
+ * HDF5 represents files, groups, datasets, datatypes, and other handles with
+ * integer identifiers. This alias keeps the local shim independent from the
+ * system headers while matching the runtime ABI used on this platform.
+ */
 using hid_t = long long;
+
+/**
+ * @brief Stores the standard HDF5 status return type.
+ *
+ * Most HDF5 functions return a negative value on failure and a non-negative
+ * value on success, so parser helpers use this alias for validation checks.
+ */
 using herr_t = int;
 using htri_t = int;
 using hsize_t = unsigned long long;
@@ -20,6 +34,12 @@ constexpr int kCsetUtf8 = 1;
 constexpr int kStrNullterm = 0;
 constexpr int kScalarSpace = 0;
 
+/**
+ * @brief Enumerates the object kinds returned by `H5Iget_type`.
+ *
+ * The parser uses these values to distinguish files, groups, datasets,
+ * datatypes, dataspaces, and attributes when dispatching element readers.
+ */
 enum class IType : int {
     kUninit = -2,
     kBadId = -1,
@@ -31,6 +51,12 @@ enum class IType : int {
     kAttr = 6,
 };
 
+/**
+ * @brief Enumerates the datatype classes returned by `H5Tget_class`.
+ *
+ * These values allow the parser to recognize whether a dataset or attribute is
+ * numeric, string-like, enum-based, or otherwise unsupported.
+ */
 enum class TClass : int {
     kNoClass = -1,
     kInteger = 0,
@@ -46,6 +72,12 @@ enum class TClass : int {
     kArray = 10,
 };
 
+/**
+ * @brief Describes the signedness of an integer HDF5 datatype.
+ *
+ * Signedness is needed when mapping HDF5 integer types onto the local
+ * `NumericArray::DType` enumeration.
+ */
 enum class TSign : int {
     kError = -1,
     kNone = 0,
@@ -53,6 +85,14 @@ enum class TSign : int {
 };
 
 extern "C" {
+
+/**
+ * @brief Declares the subset of HDF5 C symbols used by the local parser.
+ *
+ * The project intentionally avoids depending on development headers in this
+ * environment, so these declarations mirror the runtime functions and global
+ * type identifiers required by the reader and test fixture writers.
+ */
 
 herr_t H5open(void);
 
@@ -143,6 +183,13 @@ extern hid_t H5T_NATIVE_DOUBLE_g;
 
 }  // extern "C"
 
+/**
+ * @brief Initializes the HDF5 runtime exactly once for the current process.
+ *
+ * The parser calls this helper before opening files so HDF5 global state is
+ * ready. Repeated calls are safe because the initialization work is guarded by
+ * a function-local static.
+ */
 inline void initialize() {
     static bool initialized = [] {
         H5open();
