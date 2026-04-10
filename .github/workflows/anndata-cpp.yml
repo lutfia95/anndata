@@ -1,0 +1,43 @@
+name: anndata_cpp
+
+on:
+  push:
+    paths:
+      - ".github/workflows/anndata-cpp.yml"
+      - "anndata_cpp/**"
+  pull_request:
+    paths:
+      - ".github/workflows/anndata-cpp.yml"
+      - "anndata_cpp/**"
+
+jobs:
+  build-test-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libhdf5-dev doxygen graphviz
+
+      - name: Configure CMake
+        run: cmake -S anndata_cpp -B anndata_cpp/build
+
+      - name: Build C++ Targets
+        run: cmake --build anndata_cpp/build --parallel
+
+      - name: Run C++ Tests
+        run: ctest --test-dir anndata_cpp/build --output-on-failure
+
+      - name: Build Doxygen Documentation
+        run: cmake --build anndata_cpp/build --target anndata_cpp_docs
+
+      - name: Upload Doxygen HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: anndata_cpp-doxygen-html
+          path: anndata_cpp/build/doxygen/html
+          if-no-files-found: error
