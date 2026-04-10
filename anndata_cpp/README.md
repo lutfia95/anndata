@@ -36,7 +36,7 @@ anndata_cpp::AnnData adata = anndata_cpp::read_h5ad("file.h5ad");
 - This build is `.h5ad` only. Zarr support has been removed.
 - The implementation targets the modern tagged format, not the full historical compatibility surface of Python `anndata`.
 - Older archives like `v0.7.x` are expected to fail for now.
-- The code links directly against the installed HDF5 runtime (`libhdf5_serial`) because the development headers are not available in this environment.
+- The code uses a small local HDF5 C API shim and links against the installed HDF5 runtime library discovered by CMake.
 
 ## Build
 
@@ -44,6 +44,27 @@ anndata_cpp::AnnData adata = anndata_cpp::read_h5ad("file.h5ad");
 cmake -S anndata_cpp -B anndata_cpp/build
 cmake --build anndata_cpp/build
 ctest --test-dir anndata_cpp/build --output-on-failure
+```
+
+The build now finds the HDF5 runtime library dynamically instead of relying on a
+single hardcoded library path.
+
+## Doxygen
+
+The C++ sources now use Doxygen-style comments, and the project exposes a
+documentation target when `doxygen` is installed.
+
+Build the API docs with:
+
+```bash
+cmake -S anndata_cpp -B anndata_cpp/build
+cmake --build anndata_cpp/build --target anndata_cpp_docs
+```
+
+The generated HTML entry point will be:
+
+```text
+anndata_cpp/build/doxygen/html/index.html
 ```
 
 ## Run The C++ Inspector
@@ -113,6 +134,23 @@ python3 anndata_cpp/inspect_h5ad.py anndata_cpp/test_data/test.h5ad
 ```
 
 That script requires the Python dependencies from `pyproject.toml`, especially `h5py`.
+
+## GitHub Actions
+
+There is a dedicated GitHub Actions workflow for the C++ subproject at:
+
+[`/.github/workflows/anndata-cpp.yml`](/home/lutfia95/Downloads/anndata/.github/workflows/anndata-cpp.yml)
+
+GitHub only executes workflow files from the repository-root `.github/workflows`
+directory, so the file lives there even though it is scoped only to
+`anndata_cpp/` changes.
+
+It is intentionally scoped to changes under `anndata_cpp/` and performs:
+
+- CMake configure and build
+- `ctest`
+- Doxygen generation
+- upload of the generated HTML documentation as a workflow artifact
 
 ## Tests
 
