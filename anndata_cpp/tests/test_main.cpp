@@ -3,6 +3,7 @@
 #include <functional>
 #include <iostream>
 #include <stdexcept>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -246,6 +247,76 @@ Handle make_vlen_utf8_string_type() {
 }
 
 /**
+ * @brief Returns the fixed-width storage size needed for a string collection.
+ *
+ * The width includes room for a null terminator so the same helper can back
+ * both scalar and vector fixed-width UTF-8 values.
+ *
+ * @param values The string values that will be packed into fixed-width slots.
+ * @return The number of bytes required per stored string.
+ */
+std::size_t fixed_string_width(const std::vector<std::string>& values) {
+    std::size_t width = 1;
+    for (const auto& value : values) {
+        width = std::max(width, value.size() + 1);
+    }
+    return width;
+}
+
+/**
+ * @brief Packs strings into a null-terminated fixed-width byte buffer.
+ *
+ * @param values The logical string values to pack.
+ * @param width The byte width allocated to each fixed string.
+ * @return A contiguous buffer ready for HDF5 fixed-width writes.
+ */
+std::vector<char> pack_fixed_strings(const std::vector<std::string>& values, std::size_t width) {
+    std::vector<char> bytes(values.size() * width, '\0');
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        expect(values[i].size() < width, "fixed-width string buffer is too narrow");
+        std::memcpy(
+            bytes.data() + (i * width),
+            values[i].c_str(),
+            values[i].size()
+        );
+    }
+    return bytes;
+}
+
+/**
+ * @brief Creates a fixed-width UTF-8 HDF5 string datatype.
+ *
+ * @param width The byte width of each stored string, including terminator room.
+ * @return An owning handle for the configured string datatype.
+ */
+Handle make_fixed_utf8_string_type(std::size_t width) {
+    auto type = Handle(anndata_cpp::h5::H5Tcopy(anndata_cpp::h5::H5T_C_S1_g), &anndata_cpp::h5::H5Tclose);
+    expect_valid(type.get(), "failed to copy fixed-width string type");
+    expect_ok(anndata_cpp::h5::H5Tset_size(type.get(), width), "failed to set fixed string size");
+    expect_ok(anndata_cpp::h5::H5Tset_cset(type.get(), anndata_cpp::h5::kCsetUtf8), "failed to set fixed string cset");
+    expect_ok(anndata_cpp::h5::H5Tset_strpad(type.get(), anndata_cpp::h5::kStrNullterm), "failed to set fixed string padding");
+    return type;
+}
+
+/**
+ * @brief Creates an enum-backed boolean HDF5 datatype.
+ *
+ * The C++ reader recognizes AnnData booleans through HDF5 enum storage, so the
+ * synthetic fixtures need to write that representation explicitly.
+ *
+ * @return An owning handle for the configured boolean enum datatype.
+ */
+Handle make_bool_enum_type() {
+    auto type = Handle(anndata_cpp::h5::H5Tenum_create(anndata_cpp::h5::H5T_NATIVE_UCHAR_g), &anndata_cpp::h5::H5Tclose);
+    expect_valid(type.get(), "failed to create bool enum type");
+    const std::uint8_t false_value = 0U;
+    const std::uint8_t true_value = 1U;
+    expect_ok(anndata_cpp::h5::H5Tenum_insert(type.get(), "FALSE", &false_value), "failed to insert FALSE enum value");
+    expect_ok(anndata_cpp::h5::H5Tenum_insert(type.get(), "TRUE", &true_value), "failed to insert TRUE enum value");
+    return type;
+}
+
+/**
  * @brief Writes a scalar string attribute onto an HDF5 object.
  *
  * @param obj_id The target object identifier.
@@ -262,6 +333,31 @@ void write_string_attribute(anndata_cpp::h5::hid_t obj_id, const std::string& na
     expect_valid(attr.get(), "failed to create string attribute " + name);
     const char* raw = value.c_str();
     expect_ok(anndata_cpp::h5::H5Awrite(attr.get(), type.get(), &raw), "failed to write string attribute " + name);
+}
+
+/**
+ * @brief Writes a fixed-width scalar string attribute onto an HDF5 object.
+ *
+ * @param obj_id The target object identifier.
+ * @param name The attribute name to create.
+ * @param value The string value to store.
+ */
+void write_fixed_string_attribute(
+    anndata_cpp::h5::hid_t obj_id,
+    const std::string& name,
+    const std::string& value
+) {
+    const std::size_t width = std::max<std::size_t>(1, value.size() + 1);
+    auto type = make_fixed_utf8_string_type(width);
+    auto space = make_dataspace({});
+    auto attr = Handle(
+        anndata_cpp::h5::H5Acreate2(obj_id, name.c_str(), type.get(), space.get(), anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault),
+        &anndata_cpp::h5::H5Aclose
+    );
+    expect_valid(attr.get(), "failed to create fixed string attribute " + name);
+    std::vector<char> bytes(width, '\0');
+    std::memcpy(bytes.data(), value.c_str(), value.size());
+    expect_ok(anndata_cpp::h5::H5Awrite(attr.get(), type.get(), bytes.data()), "failed to write fixed string attribute " + name);
 }
 
 /**
@@ -292,6 +388,32 @@ void write_string_vector_attribute(
     }
     if (!raw.empty()) {
         expect_ok(anndata_cpp::h5::H5Awrite(attr.get(), type.get(), raw.data()), "failed to write string vector attribute " + name);
+    }
+}
+
+/**
+ * @brief Writes a fixed-width string-vector attribute onto an HDF5 object.
+ *
+ * @param obj_id The target object identifier.
+ * @param name The attribute name to create.
+ * @param values The string values to store.
+ */
+void write_fixed_string_vector_attribute(
+    anndata_cpp::h5::hid_t obj_id,
+    const std::string& name,
+    const std::vector<std::string>& values
+) {
+    const std::size_t width = fixed_string_width(values);
+    auto type = make_fixed_utf8_string_type(width);
+    auto space = make_dataspace({values.size()});
+    auto attr = Handle(
+        anndata_cpp::h5::H5Acreate2(obj_id, name.c_str(), type.get(), space.get(), anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault),
+        &anndata_cpp::h5::H5Aclose
+    );
+    expect_valid(attr.get(), "failed to create fixed string vector attribute " + name);
+    if (!values.empty()) {
+        const auto bytes = pack_fixed_strings(values, width);
+        expect_ok(anndata_cpp::h5::H5Awrite(attr.get(), type.get(), bytes.data()), "failed to write fixed string vector attribute " + name);
     }
 }
 
@@ -450,6 +572,72 @@ void write_string_array_dataset(
     }
 }
 
+/**
+ * @brief Writes an AnnData tagged fixed-width string array dataset.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param shape The dataset shape.
+ * @param values The flat string payload to write.
+ */
+void write_fixed_string_array_dataset(
+    anndata_cpp::h5::hid_t loc_id,
+    const std::string& path,
+    const std::vector<std::size_t>& shape,
+    const std::vector<std::string>& values
+) {
+    const std::size_t width = fixed_string_width(values);
+    auto type = make_fixed_utf8_string_type(width);
+    auto space = make_dataspace(shape);
+    auto dataset = Handle(
+        anndata_cpp::h5::H5Dcreate2(loc_id, path.c_str(), type.get(), space.get(), anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault),
+        &anndata_cpp::h5::H5Dclose
+    );
+    expect_valid(dataset.get(), "failed to create fixed string-array dataset " + path);
+    write_fixed_string_attribute(dataset.get(), "encoding-type", "string-array");
+    write_fixed_string_attribute(dataset.get(), "encoding-version", "0.2.0");
+    if (!values.empty()) {
+        const auto bytes = pack_fixed_strings(values, width);
+        expect_ok(
+            anndata_cpp::h5::H5Dwrite(dataset.get(), type.get(), anndata_cpp::h5::kAll, anndata_cpp::h5::kAll, anndata_cpp::h5::kDefault, bytes.data()),
+            "failed to write fixed string-array dataset " + path
+        );
+    }
+}
+
+/**
+ * @brief Writes an AnnData tagged dense boolean array dataset.
+ *
+ * The dataset is stored as an enum-backed boolean so the parser recognizes it
+ * as `NumericArray::DType::kBool`.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param shape The dataset shape.
+ * @param values The flat boolean payload encoded as 0/1 bytes.
+ */
+void write_bool_array_dataset(
+    anndata_cpp::h5::hid_t loc_id,
+    const std::string& path,
+    const std::vector<std::size_t>& shape,
+    const std::vector<std::uint8_t>& values
+) {
+    auto type = make_bool_enum_type();
+    auto space = make_dataspace(shape);
+    auto dataset = Handle(
+        anndata_cpp::h5::H5Dcreate2(loc_id, path.c_str(), type.get(), space.get(), anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault),
+        &anndata_cpp::h5::H5Dclose
+    );
+    expect_valid(dataset.get(), "failed to create bool array dataset " + path);
+    annotate_array(dataset.get());
+    if (!values.empty()) {
+        expect_ok(
+            anndata_cpp::h5::H5Dwrite(dataset.get(), type.get(), anndata_cpp::h5::kAll, anndata_cpp::h5::kAll, anndata_cpp::h5::kDefault, values.data()),
+            "failed to write bool array dataset " + path
+        );
+    }
+}
+
 template <typename T>
 /**
  * @brief Writes a tagged numeric scalar dataset.
@@ -477,6 +665,34 @@ void write_numeric_scalar_dataset(
     expect_ok(
         anndata_cpp::h5::H5Dwrite(dataset.get(), native_type_for(dtype), anndata_cpp::h5::kAll, anndata_cpp::h5::kAll, anndata_cpp::h5::kDefault, &value),
         "failed to write numeric scalar dataset " + path
+    );
+}
+
+/**
+ * @brief Writes a tagged boolean scalar dataset.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The dataset path to create.
+ * @param value The boolean scalar value to write.
+ */
+void write_bool_scalar_dataset(
+    anndata_cpp::h5::hid_t loc_id,
+    const std::string& path,
+    bool value
+) {
+    auto type = make_bool_enum_type();
+    auto space = make_dataspace({});
+    auto dataset = Handle(
+        anndata_cpp::h5::H5Dcreate2(loc_id, path.c_str(), type.get(), space.get(), anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault, anndata_cpp::h5::kDefault),
+        &anndata_cpp::h5::H5Dclose
+    );
+    expect_valid(dataset.get(), "failed to create bool scalar dataset " + path);
+    write_string_attribute(dataset.get(), "encoding-type", "numeric-scalar");
+    write_string_attribute(dataset.get(), "encoding-version", "0.2.0");
+    const std::uint8_t raw = value ? 1U : 0U;
+    expect_ok(
+        anndata_cpp::h5::H5Dwrite(dataset.get(), type.get(), anndata_cpp::h5::kAll, anndata_cpp::h5::kAll, anndata_cpp::h5::kDefault, &raw),
+        "failed to write bool scalar dataset " + path
     );
 }
 
@@ -538,10 +754,34 @@ void write_dataframe_group(
  * @param loc_id The parent HDF5 location.
  * @param path The mapping group path to create.
  */
-void write_dict_group(anndata_cpp::h5::hid_t loc_id, const std::string& path) {
+void write_mapping_group(
+    anndata_cpp::h5::hid_t loc_id,
+    const std::string& path,
+    const std::string& encoding_type
+) {
     auto group = make_group(loc_id, path);
-    write_string_attribute(group.get(), "encoding-type", "dict");
+    write_string_attribute(group.get(), "encoding-type", encoding_type);
     write_string_attribute(group.get(), "encoding-version", "0.1.0");
+}
+
+/**
+ * @brief Creates and annotates a dictionary-style mapping group.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The mapping group path to create.
+ */
+void write_dict_group(anndata_cpp::h5::hid_t loc_id, const std::string& path) {
+    write_mapping_group(loc_id, path, "dict");
+}
+
+/**
+ * @brief Creates and annotates a raw mapping group.
+ *
+ * @param loc_id The parent HDF5 location.
+ * @param path The raw group path to create.
+ */
+void write_raw_group(anndata_cpp::h5::hid_t loc_id, const std::string& path) {
+    write_mapping_group(loc_id, path, "raw");
 }
 
 /**
@@ -680,6 +920,165 @@ fs::path make_modern_sparse_fixture(const fs::path& root) {
 }
 
 /**
+ * @brief Builds a synthetic modern fixture that exercises untested branches.
+ *
+ * This fixture covers fixed-width strings, enum-backed boolean arrays, CSC
+ * matrices, nested dict mappings, populated `varm` / `obsp` / `varp`, `raw`,
+ * and scalar bool / float payloads.
+ *
+ * @param root The directory where the fixture file should be written.
+ * @return The path to the generated fixture.
+ */
+fs::path make_extended_modern_fixture(const fs::path& root) {
+    const fs::path path = root / "modern_extended.h5ad";
+    auto file = make_file(path);
+
+    write_fixed_string_attribute(file.get(), "encoding-type", "anndata");
+    write_fixed_string_attribute(file.get(), "encoding-version", "0.1.0");
+
+    write_sparse_group(file.get(), "/X", SparseMatrix::Format::kCsc, {3, 2});
+    write_array_dataset(file.get(), "/X/data", NumericArray::DType::kFloat64, {3}, std::vector<double>{1.5, 2.5, 3.5});
+    write_array_dataset(file.get(), "/X/indices", NumericArray::DType::kInt64, {3}, std::vector<std::int64_t>{0, 2, 1});
+    write_array_dataset(file.get(), "/X/indptr", NumericArray::DType::kInt64, {3}, std::vector<std::int64_t>{0, 2, 3});
+
+    auto obs = make_group(file.get(), "/obs");
+    write_fixed_string_attribute(obs.get(), "_index", "_index");
+    write_fixed_string_vector_attribute(obs.get(), "column-order", {"label", "passed_qc"});
+    write_fixed_string_attribute(obs.get(), "encoding-type", "dataframe");
+    write_fixed_string_attribute(obs.get(), "encoding-version", "0.2.0");
+    write_fixed_string_array_dataset(file.get(), "/obs/_index", {3}, {"cellA", "cellB", "cellC"});
+    write_fixed_string_array_dataset(file.get(), "/obs/label", {3}, {"alpha", "beta", "gamma"});
+    write_bool_array_dataset(file.get(), "/obs/passed_qc", {3}, {1U, 0U, 1U});
+
+    auto var = make_group(file.get(), "/var");
+    write_fixed_string_attribute(var.get(), "_index", "_index");
+    write_fixed_string_vector_attribute(var.get(), "column-order", {});
+    write_fixed_string_attribute(var.get(), "encoding-type", "dataframe");
+    write_fixed_string_attribute(var.get(), "encoding-version", "0.2.0");
+    write_fixed_string_array_dataset(file.get(), "/var/_index", {2}, {"gene0", "gene1"});
+
+    write_dict_group(file.get(), "/uns");
+    write_bool_scalar_dataset(file.get(), "/uns/is_normalized", true);
+    write_numeric_scalar_dataset(file.get(), "/uns/tolerance", NumericArray::DType::kFloat32, 0.25F);
+    write_numeric_scalar_dataset(file.get(), "/uns/scale", NumericArray::DType::kFloat64, 1.5);
+    write_dict_group(file.get(), "/uns/nested");
+    write_string_scalar_dataset(file.get(), "/uns/nested/name", "qc");
+
+    write_dict_group(file.get(), "/varm");
+    write_array_dataset(file.get(), "/varm/loadings", NumericArray::DType::kFloat32, {2, 2}, std::vector<float>{0.1F, 0.2F, 0.3F, 0.4F});
+
+    write_dict_group(file.get(), "/obsp");
+    write_sparse_group(file.get(), "/obsp/connectivities", SparseMatrix::Format::kCsc, {3, 3});
+    write_array_dataset(file.get(), "/obsp/connectivities/data", NumericArray::DType::kFloat32, {2}, std::vector<float>{0.7F, 0.8F});
+    write_array_dataset(file.get(), "/obsp/connectivities/indices", NumericArray::DType::kInt64, {2}, std::vector<std::int64_t>{1, 2});
+    write_array_dataset(file.get(), "/obsp/connectivities/indptr", NumericArray::DType::kInt64, {4}, std::vector<std::int64_t>{0, 1, 2, 2});
+
+    write_dict_group(file.get(), "/varp");
+    write_array_dataset(file.get(), "/varp/correlation", NumericArray::DType::kFloat32, {2, 2}, std::vector<float>{1.0F, 0.4F, 0.4F, 1.0F});
+
+    write_raw_group(file.get(), "/raw");
+    write_array_dataset(file.get(), "/raw/X", NumericArray::DType::kFloat32, {3, 2}, std::vector<float>{1.0F, 0.0F, 0.0F, 2.0F, 3.0F, 0.0F});
+    write_dataframe_group(file.get(), "/raw/var", "_index", {});
+    write_string_array_dataset(file.get(), "/raw/var/_index", {2}, {"gene0", "gene1"});
+    write_dict_group(file.get(), "/raw/varm");
+    write_array_dataset(file.get(), "/raw/varm/stats", NumericArray::DType::kFloat64, {2, 1}, std::vector<double>{10.0, 20.0});
+
+    return path;
+}
+
+/**
+ * @brief Builds a minimal modern fixture with an unsupported root version.
+ *
+ * @param root The directory where the fixture file should be written.
+ * @return The path to the generated invalid fixture.
+ */
+fs::path make_invalid_root_version_fixture(const fs::path& root) {
+    const fs::path path = root / "invalid_root_version.h5ad";
+    auto file = make_file(path);
+    write_string_attribute(file.get(), "encoding-type", "anndata");
+    write_string_attribute(file.get(), "encoding-version", "9.9.9");
+    return path;
+}
+
+/**
+ * @brief Builds a modern fixture with a malformed sparse shape declaration.
+ *
+ * @param root The directory where the fixture file should be written.
+ * @return The path to the generated invalid fixture.
+ */
+fs::path make_bad_sparse_shape_fixture(const fs::path& root) {
+    const fs::path path = root / "bad_sparse_shape.h5ad";
+    auto file = make_file(path);
+
+    write_string_attribute(file.get(), "encoding-type", "anndata");
+    write_string_attribute(file.get(), "encoding-version", "0.1.0");
+
+    write_dataframe_group(file.get(), "/obs", "_index", {});
+    write_string_array_dataset(file.get(), "/obs/_index", {2}, {"cell0", "cell1"});
+
+    write_dataframe_group(file.get(), "/var", "_index", {});
+    write_string_array_dataset(file.get(), "/var/_index", {2}, {"gene0", "gene1"});
+
+    auto x = make_group(file.get(), "/X");
+    write_string_attribute(x.get(), "encoding-type", "csr_matrix");
+    write_string_attribute(x.get(), "encoding-version", "0.1.0");
+    write_int_vector_attribute(x.get(), "shape", {2, 2, 2});
+    write_array_dataset(file.get(), "/X/data", NumericArray::DType::kFloat32, {1}, std::vector<float>{1.0F});
+    write_array_dataset(file.get(), "/X/indices", NumericArray::DType::kInt64, {1}, std::vector<std::int64_t>{0});
+    write_array_dataset(file.get(), "/X/indptr", NumericArray::DType::kInt64, {3}, std::vector<std::int64_t>{0, 1, 1});
+
+    return path;
+}
+
+/**
+ * @brief Builds a modern fixture with a nested group missing encoding metadata.
+ *
+ * @param root The directory where the fixture file should be written.
+ * @return The path to the generated invalid fixture.
+ */
+fs::path make_missing_group_encoding_fixture(const fs::path& root) {
+    const fs::path path = root / "missing_group_encoding.h5ad";
+    auto file = make_file(path);
+
+    write_string_attribute(file.get(), "encoding-type", "anndata");
+    write_string_attribute(file.get(), "encoding-version", "0.1.0");
+
+    write_dataframe_group(file.get(), "/obs", "_index", {});
+    write_string_array_dataset(file.get(), "/obs/_index", {1}, {"cell0"});
+
+    write_dataframe_group(file.get(), "/var", "_index", {});
+    write_string_array_dataset(file.get(), "/var/_index", {1}, {"gene0"});
+
+    write_dict_group(file.get(), "/uns");
+    static_cast<void>(make_group(file.get(), "/uns/broken"));
+
+    return path;
+}
+
+/**
+ * @brief Builds a modern fixture with an untagged dataframe column group.
+ *
+ * @param root The directory where the fixture file should be written.
+ * @return The path to the generated invalid fixture.
+ */
+fs::path make_missing_column_encoding_fixture(const fs::path& root) {
+    const fs::path path = root / "missing_column_encoding.h5ad";
+    auto file = make_file(path);
+
+    write_string_attribute(file.get(), "encoding-type", "anndata");
+    write_string_attribute(file.get(), "encoding-version", "0.1.0");
+
+    write_dataframe_group(file.get(), "/obs", "_index", {"cluster"});
+    write_string_array_dataset(file.get(), "/obs/_index", {1}, {"cell0"});
+    static_cast<void>(make_group(file.get(), "/obs/cluster"));
+
+    write_dataframe_group(file.get(), "/var", "_index", {});
+    write_string_array_dataset(file.get(), "/var/_index", {1}, {"gene0"});
+
+    return path;
+}
+
+/**
  * @brief Extracts a numeric dataframe column from a `Column` variant.
  *
  * @param column The column variant to unwrap.
@@ -707,6 +1106,31 @@ const StringArray& as_string_array(const Column& column) {
  */
 const Categorical& as_categorical(const Column& column) {
     return std::get<Categorical>(column);
+}
+
+/**
+ * @brief Verifies that a callable raises an `anndata_cpp::Error`.
+ *
+ * @param fn The operation expected to fail.
+ * @param needle A required substring in the error message.
+ * @param message The failure message to raise when the expectation is not met.
+ */
+void expect_error_contains(
+    const std::function<void()>& fn,
+    std::string_view needle,
+    const std::string& message
+) {
+    bool saw_error = false;
+    try {
+        fn();
+    } catch (const Error& error) {
+        saw_error = true;
+        expect(
+            std::string(error.what()).find(needle) != std::string::npos,
+            message + ": " + error.what()
+        );
+    }
+    expect(saw_error, message);
 }
 
 /**
@@ -778,6 +1202,113 @@ void test_synthetic_modern_sparse_h5ad() {
 }
 
 /**
+ * @brief Verifies parsing of the extended synthetic modern fixture.
+ *
+ * This test covers fixed-width strings, enum-backed booleans, CSC matrices,
+ * populated optional mappings, nested dict values, and `raw`.
+ */
+void test_synthetic_modern_extended_h5ad() {
+    const fs::path temp_dir = fs::temp_directory_path() / "anndata_cpp_h5ad_extended";
+    fs::remove_all(temp_dir);
+    const fs::path fixture = make_extended_modern_fixture(temp_dir);
+
+    const AnnData adata = anndata_cpp::read_h5ad(fixture);
+
+    expect(adata.X.has_value(), "extended fixture should have X");
+    expect(adata.X->is_sparse(), "extended X should be sparse");
+    const auto& x = adata.X->as_sparse();
+    expect(x.format == SparseMatrix::Format::kCsc, "extended X should be CSC");
+    expect(x.shape.first == 3 && x.shape.second == 2, "unexpected extended X shape");
+    expect_equal(x.data.values<double>(), std::vector<double>({1.5, 2.5, 3.5}), "unexpected CSC data");
+    expect_equal(x.indices.values<std::int64_t>(), std::vector<std::int64_t>({0, 2, 1}), "unexpected CSC indices");
+    expect_equal(x.indptr.values<std::int64_t>(), std::vector<std::int64_t>({0, 2, 3}), "unexpected CSC indptr");
+
+    expect_equal(adata.obs.column_order, std::vector<std::string>({"label", "passed_qc"}), "unexpected fixed-width column order");
+    expect_equal(as_string_array(adata.obs.index).values, std::vector<std::string>({"cellA", "cellB", "cellC"}), "unexpected fixed-width obs index");
+    expect_equal(as_string_array(adata.obs.columns.at("label")).values, std::vector<std::string>({"alpha", "beta", "gamma"}), "unexpected fixed-width labels");
+    const auto& passed_qc = as_numeric(adata.obs.columns.at("passed_qc"));
+    expect(passed_qc.dtype == NumericArray::DType::kBool, "passed_qc should decode as bool");
+    expect_equal(passed_qc.bytes, std::vector<std::uint8_t>({1U, 0U, 1U}), "unexpected bool array bytes");
+
+    expect(adata.uns != nullptr, "extended fixture should have uns");
+    expect(adata.uns->items.at("is_normalized").as_scalar().is_bool(), "bool scalar should stay bool");
+    expect(adata.uns->items.at("is_normalized").as_scalar().as_bool(), "unexpected bool scalar value");
+    expect(adata.uns->items.at("tolerance").as_scalar().is_double(), "float32 scalar should normalize to double");
+    expect(adata.uns->items.at("scale").as_scalar().is_double(), "float64 scalar should stay double");
+    expect(std::abs(adata.uns->items.at("tolerance").as_scalar().as_double() - 0.25) < 1e-12, "unexpected float32 scalar");
+    expect(std::abs(adata.uns->items.at("scale").as_scalar().as_double() - 1.5) < 1e-12, "unexpected float64 scalar");
+    expect(adata.uns->items.at("nested").is_mapping(), "nested uns item should be a mapping");
+    expect_equal(
+        adata.uns->items.at("nested").as_mapping().items.at("name").as_scalar().as_string(),
+        std::string("qc"),
+        "unexpected nested uns scalar"
+    );
+
+    expect(adata.varm != nullptr, "extended fixture should have varm");
+    expect_equal(
+        adata.varm->items.at("loadings").as_numeric_array().values<float>(),
+        std::vector<float>({0.1F, 0.2F, 0.3F, 0.4F}),
+        "unexpected varm/loadings values"
+    );
+
+    expect(adata.obsp != nullptr, "extended fixture should have obsp");
+    const auto& connectivities = adata.obsp->items.at("connectivities").as_sparse();
+    expect(connectivities.format == SparseMatrix::Format::kCsc, "obsp/connectivities should be CSC");
+    expect_equal(connectivities.data.values<float>(), std::vector<float>({0.7F, 0.8F}), "unexpected obsp/connectivities data");
+
+    expect(adata.varp != nullptr, "extended fixture should have varp");
+    expect_equal(
+        adata.varp->items.at("correlation").as_numeric_array().values<float>(),
+        std::vector<float>({1.0F, 0.4F, 0.4F, 1.0F}),
+        "unexpected varp/correlation values"
+    );
+
+    expect(adata.raw != nullptr, "extended fixture should have raw");
+    expect(adata.raw->items.at("X").is_numeric_array(), "raw/X should be dense");
+    expect_equal(
+        adata.raw->items.at("X").as_numeric_array().values<float>(),
+        std::vector<float>({1.0F, 0.0F, 0.0F, 2.0F, 3.0F, 0.0F}),
+        "unexpected raw/X values"
+    );
+    expect(adata.raw->items.at("var").is_dataframe(), "raw/var should be a dataframe");
+    expect_equal(
+        as_string_array(adata.raw->items.at("var").as_dataframe().index).values,
+        std::vector<std::string>({"gene0", "gene1"}),
+        "unexpected raw/var index"
+    );
+    expect(adata.raw->items.at("varm").is_mapping(), "raw/varm should be a mapping");
+    expect_equal(
+        adata.raw->items.at("varm").as_mapping().items.at("stats").as_numeric_array().values<double>(),
+        std::vector<double>({10.0, 20.0}),
+        "unexpected raw/varm/stats values"
+    );
+}
+
+/**
+ * @brief Verifies parsing of the bundled Python-generated `test.h5ad` fixture.
+ *
+ * This complements the archive smoke test with a richer real-world file that
+ * includes categorical `obs`, sparse layers, and populated matrix mappings.
+ */
+void test_bundled_python_fixture_h5ad() {
+    const fs::path archive =
+        fs::path(ANNDATA_CPP_REPO_ROOT) / "anndata_cpp" / "test_data" / "test.h5ad";
+
+    const AnnData adata = anndata_cpp::read_h5ad(archive);
+
+    expect(adata.X.has_value(), "bundled Python fixture should have X");
+    expect(adata.X->is_sparse(), "bundled Python fixture X should be sparse");
+    expect(adata.obsm != nullptr && adata.obsm->items.count("X_umap") == 1, "bundled Python fixture should have obsm/X_umap");
+    expect(adata.varm != nullptr && adata.varm->items.count("gene_stuff") == 1, "bundled Python fixture should have varm/gene_stuff");
+    expect(adata.layers != nullptr && adata.layers->items.count("log_transformed") == 1, "bundled Python fixture should have layers/log_transformed");
+    expect(std::holds_alternative<Categorical>(adata.obs.columns.at("cell_type")), "cell_type should decode as categorical");
+    expect_equal(adata.X->as_sparse().shape, std::pair<std::size_t, std::size_t>({100, 2000}), "unexpected bundled X shape");
+    expect_equal(adata.obsm->items.at("X_umap").as_numeric_array().shape, std::vector<std::size_t>({100, 2}), "unexpected bundled obsm/X_umap shape");
+    expect_equal(adata.varm->items.at("gene_stuff").as_numeric_array().shape, std::vector<std::size_t>({2000, 5}), "unexpected bundled varm/gene_stuff shape");
+    expect(adata.layers->items.at("log_transformed").is_sparse(), "bundled layer should stay sparse");
+}
+
+/**
  * @brief Verifies parsing of the bundled real-world modern archive fixture.
  *
  * The current `v0.11.4` archive is intentionally simple but still acts as a
@@ -821,6 +1352,66 @@ void test_old_archive_fails_cleanly() {
     expect(saw_error, "old archive should currently fail");
 }
 
+/**
+ * @brief Verifies that unsupported root versions fail clearly.
+ */
+void test_invalid_root_version_fails() {
+    const fs::path temp_dir = fs::temp_directory_path() / "anndata_cpp_h5ad_invalid_root_version";
+    fs::remove_all(temp_dir);
+    const fs::path fixture = make_invalid_root_version_fixture(temp_dir);
+
+    expect_error_contains(
+        [&fixture]() { static_cast<void>(anndata_cpp::read_h5ad(fixture)); },
+        "unsupported anndata encoding-version",
+        "invalid root version should fail clearly"
+    );
+}
+
+/**
+ * @brief Verifies that malformed sparse metadata fails clearly.
+ */
+void test_bad_sparse_shape_fails() {
+    const fs::path temp_dir = fs::temp_directory_path() / "anndata_cpp_h5ad_bad_sparse_shape";
+    fs::remove_all(temp_dir);
+    const fs::path fixture = make_bad_sparse_shape_fixture(temp_dir);
+
+    expect_error_contains(
+        [&fixture]() { static_cast<void>(anndata_cpp::read_h5ad(fixture)); },
+        "shape must have length 2",
+        "bad sparse shape should fail clearly"
+    );
+}
+
+/**
+ * @brief Verifies that nested groups missing encoding tags fail clearly.
+ */
+void test_missing_group_encoding_fails() {
+    const fs::path temp_dir = fs::temp_directory_path() / "anndata_cpp_h5ad_missing_group_encoding";
+    fs::remove_all(temp_dir);
+    const fs::path fixture = make_missing_group_encoding_fixture(temp_dir);
+
+    expect_error_contains(
+        [&fixture]() { static_cast<void>(anndata_cpp::read_h5ad(fixture)); },
+        "missing encoding-type",
+        "untagged nested group should fail clearly"
+    );
+}
+
+/**
+ * @brief Verifies that grouped dataframe columns require encoding metadata.
+ */
+void test_missing_column_encoding_fails() {
+    const fs::path temp_dir = fs::temp_directory_path() / "anndata_cpp_h5ad_missing_column_encoding";
+    fs::remove_all(temp_dir);
+    const fs::path fixture = make_missing_column_encoding_fixture(temp_dir);
+
+    expect_error_contains(
+        [&fixture]() { static_cast<void>(anndata_cpp::read_h5ad(fixture)); },
+        "column group at /obs/cluster is missing encoding-type",
+        "untagged dataframe column should fail clearly"
+    );
+}
+
 }  // namespace
 
 /**
@@ -835,8 +1426,14 @@ int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"synthetic_modern_dense_h5ad", test_synthetic_modern_dense_h5ad},
         {"synthetic_modern_sparse_h5ad", test_synthetic_modern_sparse_h5ad},
+        {"synthetic_modern_extended_h5ad", test_synthetic_modern_extended_h5ad},
         {"real_archive_v0114_h5ad", test_real_archive_v0114_h5ad},
+        {"bundled_python_fixture_h5ad", test_bundled_python_fixture_h5ad},
         {"old_archive_fails_cleanly", test_old_archive_fails_cleanly},
+        {"invalid_root_version_fails", test_invalid_root_version_fails},
+        {"bad_sparse_shape_fails", test_bad_sparse_shape_fails},
+        {"missing_group_encoding_fails", test_missing_group_encoding_fails},
+        {"missing_column_encoding_fails", test_missing_column_encoding_fails},
     };
 
     for (const auto& [name, test] : tests) {

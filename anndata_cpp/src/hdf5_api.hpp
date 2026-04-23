@@ -159,6 +159,8 @@ int H5Sget_simple_extent_ndims(hid_t space_id);
 int H5Sget_simple_extent_dims(hid_t space_id, hsize_t* dims, hsize_t* maxdims);
 
 hid_t H5Tcopy(hid_t type_id);
+hid_t H5Tenum_create(hid_t base_id);
+herr_t H5Tenum_insert(hid_t type_id, const char* name, const void* value);
 herr_t H5Tclose(hid_t type_id);
 TClass H5Tget_class(hid_t type_id);
 std::size_t H5Tget_size(hid_t type_id);
