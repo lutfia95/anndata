@@ -1,0 +1,36 @@
+PROJECT_NAME           = "anndata_cpp"
+PROJECT_BRIEF          = "Minimal C++ AnnData reader for modern .h5ad files"
+OUTPUT_DIRECTORY       = "@ANNDATA_CPP_DOXYGEN_OUTPUT_DIR@"
+CREATE_SUBDIRS         = NO
+
+INPUT                  = "@CMAKE_CURRENT_SOURCE_DIR@/include" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/src" \
+                         "@CMAKE_CURRENT_SOURCE_DIR@/tests"
+FILE_PATTERNS          = *.hpp \
+                         *.cpp
+RECURSIVE              = YES
+
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+EXTRACT_ANON_NSPACES   = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = YES
+HTML_OUTPUT            = html
+
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+
+JAVADOC_AUTOBRIEF      = YES
+MULTILINE_CPP_IS_BRIEF = NO
+SORT_MEMBER_DOCS       = YES
+OPTIMIZE_OUTPUT_FOR_C  = NO
+EXCLUDE_PATTERNS       = */build/*
