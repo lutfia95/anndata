@@ -1296,4 +1296,120 @@ AnnData read_h5ad(const std::filesystem::path& path) {
     return adata;
 }
 
+/**
+ * @brief Creates an empty writer without a configured output path.
+ */
+H5adWriter::H5adWriter() = default;
+
+/**
+ * @brief Creates a writer targeting one output path with default options.
+ *
+ * @param path The `.h5ad` file path the writer should eventually populate.
+ */
+H5adWriter::H5adWriter(std::filesystem::path path) : path_(std::move(path)) {}
+
+/**
+ * @brief Creates a writer targeting one output path with explicit options.
+ *
+ * @param path The `.h5ad` file path the writer should eventually populate.
+ * @param options The writer configuration to store.
+ */
+H5adWriter::H5adWriter(std::filesystem::path path, H5adWriteOptions options)
+    : path_(std::move(path)), options_(std::move(options)) {}
+
+/**
+ * @brief Returns the configured output path.
+ *
+ * @return The filesystem path the writer currently targets.
+ */
+const std::filesystem::path& H5adWriter::path() const {
+    return path_;
+}
+
+/**
+ * @brief Replaces the configured output path.
+ *
+ * @param path The new `.h5ad` output path.
+ * @return `*this` for fluent configuration.
+ */
+H5adWriter& H5adWriter::set_path(std::filesystem::path path) {
+    path_ = std::move(path);
+    return *this;
+}
+
+/**
+ * @brief Returns the stored writer options.
+ *
+ * @return The current writer option set.
+ */
+const H5adWriteOptions& H5adWriter::options() const {
+    return options_;
+}
+
+/**
+ * @brief Replaces the stored writer options.
+ *
+ * @param options The new writer option set.
+ * @return `*this` for fluent configuration.
+ */
+H5adWriter& H5adWriter::set_options(H5adWriteOptions options) {
+    options_ = std::move(options);
+    return *this;
+}
+
+/**
+ * @brief Updates the file-overwrite policy.
+ *
+ * @param mode The new file handling mode.
+ * @return `*this` for fluent configuration.
+ */
+H5adWriter& H5adWriter::set_existing_file_mode(ExistingFileMode mode) {
+    options_.existing_file_mode = mode;
+    return *this;
+}
+
+/**
+ * @brief Updates the preferred on-disk string encoding policy.
+ *
+ * @param storage The new string storage policy.
+ * @return `*this` for fluent configuration.
+ */
+H5adWriter& H5adWriter::set_string_storage(StringStorage storage) {
+    options_.string_storage = storage;
+    return *this;
+}
+
+/**
+ * @brief Updates how absent optional mappings should be materialized.
+ *
+ * @param policy The new missing-slot policy.
+ * @return `*this` for fluent configuration.
+ */
+H5adWriter& H5adWriter::set_missing_slot_policy(MissingSlotPolicy policy) {
+    options_.missing_slot_policy = policy;
+    return *this;
+}
+
+/**
+ * @brief Enables or disables pre-write validation.
+ *
+ * @param validate Whether the future writer should validate input before writing.
+ * @return `*this` for fluent configuration.
+ */
+H5adWriter& H5adWriter::set_validate_before_write(bool validate) {
+    options_.validate_before_write = validate;
+    return *this;
+}
+
+/**
+ * @brief Placeholder entry point for the future `.h5ad` writer.
+ *
+ * @param adata The AnnData object that should eventually be serialized.
+ * @throws Error Always, until the writer implementation lands.
+ */
+void H5adWriter::write(const AnnData& adata) const {
+    (void)adata;
+    throw Error("H5adWriter::write is not implemented yet");
+}
+
 }  // namespace anndata_cpp

@@ -17,11 +17,12 @@
 namespace anndata_cpp {
 
 /**
- * @brief Represents parser-level errors raised while decoding an `.h5ad` file.
+ * @brief Represents reader and writer errors raised while handling `.h5ad` files.
  *
- * This exception type is used throughout the C++ reader to report unsupported
- * encodings, malformed HDF5 layouts, and type mismatches encountered while
- * constructing the in-memory AnnData model.
+ * This exception type is used throughout the C++ API to report unsupported
+ * encodings, malformed HDF5 layouts, type mismatches, and writer-side
+ * precondition failures encountered while reading or writing the in-memory
+ * AnnData model.
  */
 class Error : public std::runtime_error {
 public:
@@ -389,6 +390,85 @@ struct AnnData {
     std::shared_ptr<Mapping> layers;
     std::shared_ptr<Mapping> uns;
     std::shared_ptr<Mapping> raw;
+};
+
+/**
+ * @brief Controls how a writer should handle an already existing output file.
+ */
+enum class ExistingFileMode {
+    kFail,
+    kOverwrite,
+};
+
+/**
+ * @brief Controls how string payloads should be encoded on disk.
+ */
+enum class StringStorage {
+    kVariableLengthUtf8,
+    kFixedLengthUtf8,
+};
+
+/**
+ * @brief Controls whether absent optional mapping slots should be omitted or emitted.
+ */
+enum class MissingSlotPolicy {
+    kOmit,
+    kWriteEmptyMapping,
+};
+
+/**
+ * @brief Stores configuration for future `.h5ad` writing.
+ *
+ * The initial writer will emit the modern tagged format supported by the C++
+ * reader. These options let callers choose a small number of storage policies
+ * without committing the implementation to Python-level compatibility modes.
+ */
+struct H5adWriteOptions {
+    ExistingFileMode existing_file_mode = ExistingFileMode::kFail;
+    StringStorage string_storage = StringStorage::kVariableLengthUtf8;
+    MissingSlotPolicy missing_slot_policy = MissingSlotPolicy::kOmit;
+    bool validate_before_write = true;
+};
+
+/**
+ * @brief Stores the target path and configuration for writing an `.h5ad` file.
+ *
+ * This class is the public entry point for the future C++ writer. For now it
+ * only owns writer configuration and exposes the eventual `write()` surface so
+ * the API can stabilize before the serialization logic is filled in.
+ */
+class H5adWriter {
+public:
+    H5adWriter();
+    explicit H5adWriter(std::filesystem::path path);
+    H5adWriter(std::filesystem::path path, H5adWriteOptions options);
+
+    const std::filesystem::path& path() const;
+    H5adWriter& set_path(std::filesystem::path path);
+
+    const H5adWriteOptions& options() const;
+    H5adWriter& set_options(H5adWriteOptions options);
+
+    H5adWriter& set_existing_file_mode(ExistingFileMode mode);
+    H5adWriter& set_string_storage(StringStorage storage);
+    H5adWriter& set_missing_slot_policy(MissingSlotPolicy policy);
+    H5adWriter& set_validate_before_write(bool validate);
+
+    /**
+     * @brief Writes the provided AnnData object to the configured output path.
+     *
+     * The serialization logic will be implemented in a later step; for now the
+     * method exists so callers can start constructing writer objects through the
+     * final API shape.
+     *
+     * @param adata The AnnData object that should eventually be serialized.
+     * @throws Error Until the writer implementation is filled in.
+     */
+    void write(const AnnData& adata) const;
+
+private:
+    std::filesystem::path path_;
+    H5adWriteOptions options_;
 };
 
 /**
