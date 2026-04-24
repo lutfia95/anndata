@@ -21,9 +21,14 @@ using anndata_cpp::Categorical;
 using anndata_cpp::Column;
 using anndata_cpp::Element;
 using anndata_cpp::Error;
+using anndata_cpp::ExistingFileMode;
+using anndata_cpp::H5adWriteOptions;
+using anndata_cpp::H5adWriter;
+using anndata_cpp::MissingSlotPolicy;
 using anndata_cpp::NumericArray;
 using anndata_cpp::Scalar;
 using anndata_cpp::SparseMatrix;
+using anndata_cpp::StringStorage;
 using anndata_cpp::StringArray;
 
 /**
@@ -1412,6 +1417,58 @@ void test_missing_column_encoding_fails() {
     );
 }
 
+/**
+ * @brief Verifies the public writer-class configuration surface.
+ *
+ * This test only checks the new writer-side classes and fluent mutators. The
+ * actual HDF5 serialization logic will be implemented in a later step.
+ */
+void test_writer_class_configuration() {
+    H5adWriter writer;
+    expect(writer.path().empty(), "default writer path should be empty");
+    expect(writer.options().existing_file_mode == ExistingFileMode::kFail, "default writer should fail on existing files");
+    expect(
+        writer.options().string_storage == StringStorage::kVariableLengthUtf8,
+        "default writer should prefer variable-length UTF-8 strings"
+    );
+    expect(
+        writer.options().missing_slot_policy == MissingSlotPolicy::kOmit,
+        "default writer should omit absent optional mappings"
+    );
+    expect(writer.options().validate_before_write, "default writer should validate before write");
+
+    H5adWriteOptions options;
+    options.existing_file_mode = ExistingFileMode::kOverwrite;
+    options.string_storage = StringStorage::kFixedLengthUtf8;
+    options.missing_slot_policy = MissingSlotPolicy::kWriteEmptyMapping;
+    options.validate_before_write = false;
+
+    H5adWriter configured(fs::path("configured.h5ad"), options);
+    expect_equal(configured.path(), fs::path("configured.h5ad"), "configured writer path mismatch");
+    expect(configured.options().existing_file_mode == ExistingFileMode::kOverwrite, "configured overwrite mode mismatch");
+    expect(configured.options().string_storage == StringStorage::kFixedLengthUtf8, "configured string storage mismatch");
+    expect(
+        configured.options().missing_slot_policy == MissingSlotPolicy::kWriteEmptyMapping,
+        "configured missing-slot policy mismatch"
+    );
+    expect(!configured.options().validate_before_write, "configured validation flag mismatch");
+
+    writer.set_path("output.h5ad")
+        .set_existing_file_mode(ExistingFileMode::kOverwrite)
+        .set_string_storage(StringStorage::kFixedLengthUtf8)
+        .set_missing_slot_policy(MissingSlotPolicy::kWriteEmptyMapping)
+        .set_validate_before_write(false);
+
+    expect_equal(writer.path(), fs::path("output.h5ad"), "mutated writer path mismatch");
+    expect(writer.options().existing_file_mode == ExistingFileMode::kOverwrite, "mutated overwrite mode mismatch");
+    expect(writer.options().string_storage == StringStorage::kFixedLengthUtf8, "mutated string storage mismatch");
+    expect(
+        writer.options().missing_slot_policy == MissingSlotPolicy::kWriteEmptyMapping,
+        "mutated missing-slot policy mismatch"
+    );
+    expect(!writer.options().validate_before_write, "mutated validation flag mismatch");
+}
+
 }  // namespace
 
 /**
@@ -1434,6 +1491,7 @@ int main() {
         {"bad_sparse_shape_fails", test_bad_sparse_shape_fails},
         {"missing_group_encoding_fails", test_missing_group_encoding_fails},
         {"missing_column_encoding_fails", test_missing_column_encoding_fails},
+        {"writer_class_configuration", test_writer_class_configuration},
     };
 
     for (const auto& [name, test] : tests) {
